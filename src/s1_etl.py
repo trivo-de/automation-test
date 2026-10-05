@@ -56,6 +56,7 @@ def main():
            CAST(t.quantity AS BIGINT) AS qty,
            CAST(t.price AS DOUBLE)    AS price,
            CAST(t.trade_date AS DATE) AS d,
+           CAST(t.execution_time AS TIME) AS ts,
            t.exchange,
            CAST(t.quantity AS BIGINT) * CAST(t.price AS DOUBLE) AS value,
            -- cờ bất thường: giá lệnh nằm ngoài biên độ cao/thấp của phiên

@@ -5,7 +5,7 @@ CHỈ bằng dữ liệu có trước hoặc bằng t. Đây là thứ thay th�
 portfolio_value / cash_balance trong customer_profile.csv (vốn là giá trị cuối kỳ -> rò rỉ).
 """
 
-from config import BEHAVIOR_HALF_LIFE, HORIZON, connect, log
+from config import BEHAVIOR_HALF_LIFE, HORIZON, RECENT_WINDOW, connect, log
 
 
 def main():
@@ -51,6 +51,29 @@ def main():
     GROUP BY 1, 2;
     """)
 
+    # Upstream lưu research theo ngày: chỉ tính lệnh mua có tín hiệu BUY cùng ngày.
+    # Chỉ dùng kết quả đã đủ HORIZON phiên tại t; EXISTS tránh nhân đôi giao dịch.
+    con.execute(f"""
+    CREATE OR REPLACE TABLE cust_phs_quality AS
+    SELECT dd.t, x.customer_id,
+           COUNT(*) AS phs_scored_buys,
+           AVG(CAST(s.y_stock AS DOUBLE)) AS phs_hit_rate,
+           AVG(s.excess_fwd) AS phs_avg_excess,
+           COUNT(*) FILTER (WHERE x.d >= dd.t - {RECENT_WINDOW}) AS phs_recent_scored_buys,
+           AVG(CAST(s.y_stock AS DOUBLE)) FILTER (WHERE x.d >= dd.t - {RECENT_WINDOW})
+               AS phs_recent_hit_rate,
+           AVG(s.excess_fwd) FILTER (WHERE x.d >= dd.t - {RECENT_WINDOW})
+               AS phs_recent_avg_excess
+    FROM decision_dates dd
+    JOIN txn x ON x.side = 'BUY' AND x.d < dd.t
+    JOIN sd s ON s.stock_code = x.stock_code AND s.d = x.d
+    WHERE s.dn + {HORIZON} <= dd.dn
+      AND EXISTS (SELECT 1 FROM research r
+                  WHERE r.stock_code = x.stock_code AND r.d = x.d
+                    AND r.recommendation = 'BUY')
+    GROUP BY 1, 2;
+    """)
+
     # ---------- 4. "Tay nghề" khách trong quá khứ ----------
     # Tỷ lệ lệnh MUA trước đây mà 20 phiên sau mã đó thắng VNINDEX.
     # Chỉ tính các lệnh đã ĐỦ 20 phiên TRƯỚC t, nếu không sẽ rò rỉ tương lai.
@@ -77,6 +100,85 @@ def main():
     FROM decision_dates dd
     JOIN txn x  ON x.d < dd.t AND x.side = 'BUY'
     JOIN sec sc ON sc.stock_code = x.stock_code
+    GROUP BY 1, 2, 3;
+    """)
+
+    # Khẩu vị ngành trong 30 ngày và RECENT_WINDOW ngày so với toàn bộ lịch sử.
+    con.execute(f"""
+    CREATE OR REPLACE TABLE cust_sector_recent AS
+    WITH a AS (
+        SELECT dd.t, x.customer_id, sc.icb_code,
+               COUNT(*) AS n_all,
+               SUM(x.value) AS value_all,
+               SUM(CASE WHEN x.d >= dd.t - 30 THEN 1 ELSE 0 END) AS n_30d,
+               SUM(CASE WHEN x.d >= dd.t - 30 THEN x.value ELSE 0 END) AS value_30d,
+               SUM(CASE WHEN x.d >= dd.t - {RECENT_WINDOW} THEN 1 ELSE 0 END) AS n_90d,
+               SUM(CASE WHEN x.d >= dd.t - {RECENT_WINDOW} THEN x.value ELSE 0 END)
+                   AS value_90d
+        FROM decision_dates dd
+        JOIN txn x  ON x.d < dd.t AND x.side = 'BUY'
+        JOIN sec sc ON sc.stock_code = x.stock_code
+        GROUP BY 1, 2, 3
+    )
+    SELECT *,
+           n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_share_all,
+           n_30d * 1.0 / NULLIF(SUM(n_30d) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_share_30d,
+           n_90d * 1.0 / NULLIF(SUM(n_90d) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_share_90d,
+           value_90d * 1.0 / NULLIF(SUM(value_90d) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_value_share_90d,
+           COALESCE(
+               n_30d * 1.0 / NULLIF(SUM(n_30d) OVER (PARTITION BY t, customer_id), 0), 0
+           ) - n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_recent_shift_30d,
+           COALESCE(
+               n_90d * 1.0 / NULLIF(SUM(n_90d) OVER (PARTITION BY t, customer_id), 0), 0
+           ) - n_all * 1.0 / NULLIF(SUM(n_all) OVER (PARTITION BY t, customer_id), 0)
+               AS icb_recent_shift_90d
+    FROM a;
+    """)
+
+    # Xếp lệnh mua theo ngày, giờ khớp và mã giao dịch để phá hòa ổn định.
+    con.execute("""
+    CREATE OR REPLACE TABLE cust_recent_stock_seq AS
+    WITH r AS (
+        SELECT dd.t, x.customer_id, x.stock_code,
+               ROW_NUMBER() OVER (
+                   PARTITION BY dd.t, x.customer_id
+                   ORDER BY x.d DESC, x.ts DESC, x.transaction_id DESC
+               ) AS rn,
+               DATE_DIFF('day', x.d, dd.t) AS days_ago
+        FROM decision_dates dd
+        JOIN txn x ON x.d < dd.t AND x.side = 'BUY'
+    )
+    SELECT t, customer_id, stock_code,
+           MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) AS stock_in_last_buy,
+           MAX(CASE WHEN rn <= 3 THEN 1 ELSE 0 END) AS stock_in_last_3_buys,
+           MAX(CASE WHEN rn <= 5 THEN 1 ELSE 0 END) AS stock_in_last_5_buys,
+           MIN(days_ago) AS days_since_last_buy_stock
+    FROM r
+    GROUP BY 1, 2, 3;
+
+    CREATE OR REPLACE TABLE cust_recent_sector_seq AS
+    WITH r AS (
+        SELECT dd.t, x.customer_id, sc.icb_code,
+               ROW_NUMBER() OVER (
+                   PARTITION BY dd.t, x.customer_id
+                   ORDER BY x.d DESC, x.ts DESC, x.transaction_id DESC
+               ) AS rn,
+               DATE_DIFF('day', x.d, dd.t) AS days_ago
+        FROM decision_dates dd
+        JOIN txn x ON x.d < dd.t AND x.side = 'BUY'
+        JOIN sec sc ON sc.stock_code = x.stock_code
+    )
+    SELECT t, customer_id, icb_code,
+           MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) AS same_sector_as_last_buy,
+           SUM(CASE WHEN rn <= 3 THEN 1 ELSE 0 END) AS same_sector_last_3_buys,
+           SUM(CASE WHEN rn <= 5 THEN 1 ELSE 0 END) AS same_sector_last_5_buys,
+           MIN(days_ago) AS days_since_last_buy_same_sector
+    FROM r
     GROUP BY 1, 2, 3;
     """)
 
@@ -130,8 +232,12 @@ def main():
         "pos",
         "port_pit",
         "cust_pit",
+        "cust_phs_quality",
         "cust_skill",
         "cust_sector",
+        "cust_sector_recent",
+        "cust_recent_stock_seq",
+        "cust_recent_sector_seq",
         "cust_style",
         "cust_stock_pit",
     ]:

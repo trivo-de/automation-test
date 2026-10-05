@@ -262,6 +262,22 @@ Ngoài ra model còn nhận:
 - số vị thế, giá trị và lãi/lỗ danh mục;
 - loại khách, mức chịu rủi ro, kỳ hạn và tuổi tài khoản.
 
+### 6.4 Đặc trưng hành vi bổ sung
+
+Các đặc trưng dưới đây được ghép vào cả nhánh MUA và nhánh danh mục.
+Với dữ liệu upstream, mua theo nghiên cứu nghĩa là mã có khuyến nghị `BUY`
+trong `research` đúng ngày giao dịch; không suy diễn thời gian mở khuyến nghị
+từ bộ dữ liệu PHS riêng. Chỉ tính kết quả sau khi đủ `HORIZON` phiên tại mốc `t`.
+Các cột có hậu tố `90d` dùng `RECENT_WINDOW` (mặc định 90 ngày).
+
+| Đặc trưng | Ý nghĩa |
+|---|---|
+| `phs_hit_rate`, `phs_avg_excess`, `phs_recent_hit_rate` | Chất lượng các lần khách từng mua theo PHS, chỉ tính lệnh đã đủ `HORIZON` trước `t` |
+| `icb_share_30d`, `icb_share_90d`, `icb_recent_shift_30d`, `icb_recent_shift_90d` | Khẩu vị ngành gần đây so với toàn lịch sử mua của khách |
+| `stock_in_last_3_buys`, `stock_in_last_5_buys` | Mã đang xét có nằm trong các lệnh BUY gần nhất của khách không |
+| `same_sector_last_3_buys`, `same_sector_last_5_buys` | Ngành của mã đang xét có trùng với chuỗi BUY gần nhất của khách không |
+| `days_since_last_buy_same_sector` | Số ngày từ lần gần nhất khách mua một mã cùng ngành |
+
 ## 7. Đặc trưng graph từ Neo4j
 
 ### Node và edge
@@ -513,4 +529,3 @@ docker compose config --quiet
   tỷ trọng theo mã/ngành.
 - Kết quả của hệ thống chỉ phục vụ nghiên cứu và hỗ trợ quyết định, không phải cam kết
   lợi nhuận hay tư vấn đầu tư tự động.
-

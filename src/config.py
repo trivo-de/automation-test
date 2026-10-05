@@ -20,6 +20,7 @@ COOC_TOPN = int(os.getenv("COOC_TOPN", "25"))  # số mã đồng mua mạnh nh�
 #                              + (1-MARKET_WEIGHT) * điểm hành vi khách.
 MARKET_WEIGHT = float(os.getenv("MARKET_WEIGHT", "0.60"))
 BEHAVIOR_HALF_LIFE = int(os.getenv("BEHAVIOR_HALF_LIFE", "90"))
+RECENT_WINDOW = int(os.getenv("RECENT_WINDOW", "90"))
 
 if not 0 <= MARKET_WEIGHT <= 1:
     raise ValueError("MARKET_WEIGHT phải nằm trong [0, 1]")
