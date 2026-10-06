@@ -40,6 +40,51 @@ services:
       - ./artifacts:/app/artifacts
     command: ["python", "-u", "/app/src/app.py"]
 
+  # Airflow không được chạm trực tiếp vào Docker của máy chủ. Nó đi qua proxy này,
+  # proxy chỉ mở đúng các thao tác cần: tạo/chạy/dừng/xoá container.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: vv-docker-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      POST: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # Airflow thay cho CI: DAG kiểm tra code khi có commit mới và DAG chạy pipeline.
+  # Giao diện: http://localhost:8080 — đăng nhập bằng AIRFLOW_ADMIN_USER /
+  # AIRFLOW_ADMIN_PASSWORD đặt trong .env.
+  # Phải chạy `docker compose` từ thư mục gốc của dự án để ${PWD} đúng.
+  airflow:
+    image: apache/airflow:2.10.5-python3.11
+    container_name: vv-airflow
+    restart: unless-stopped
+    depends_on:
+      - docker-proxy
+    command: ["bash", "/opt/project/airflow/start.sh"]
+    env_file: .env
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Ho_Chi_Minh
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
+      AIRFLOW__WEBSERVER__WORKERS: 1
+      HOST_PROJECT_DIR: ${PWD}
+      DOCKER_URL: tcp://docker-proxy:2375
+    mem_limit: 2g
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./:/opt/project:ro
+      - airflow_home:/opt/airflow
+
 volumes:
   neo4j_data:
   neo4j_logs:
+  airflow_home:

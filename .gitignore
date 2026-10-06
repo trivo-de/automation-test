@@ -8,4 +8,6 @@ __pycache__/
 .DS_Store
 data.zip
 test.md
+tests/
 docs/
+old/
